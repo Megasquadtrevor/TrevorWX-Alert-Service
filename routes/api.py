@@ -1,13 +1,61 @@
 from flask import Blueprint, jsonify, request
 from werkzeug.security import generate_password_hash
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from functools import wraps
+from datetime import datetime, timezone
 import sqlite3
 import json
 import os
-from datetime import datetime, timezone
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
 DB_FILE = os.path.join("database", "subscribers.db")
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+serializer = URLSafeTimedSerializer(SECRET_KEY)
+
+
+def create_token(account_id):
+    return serializer.dumps({"account_id": account_id})
+
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+
+        if not auth_header.startswith("Bearer "):
+            return jsonify({
+                "ok": False,
+                "error": "Authentication required."
+            }), 401
+
+        token = auth_header.split(" ", 1)[1].strip()
+
+        try:
+            token_data = serializer.loads(
+                token,
+                max_age=60 * 60 * 24 * 30
+            )
+            account_id = token_data.get("account_id")
+
+            if not account_id:
+                raise BadSignature("Invalid token")
+
+        except SignatureExpired:
+            return jsonify({
+                "ok": False,
+                "error": "Authentication token has expired."
+            }), 401
+
+        except BadSignature:
+            return jsonify({
+                "ok": False,
+                "error": "Invalid authentication token."
+            }), 401
+
+        return f(account_id, *args, **kwargs)
+
+    return decorated
 
 
 def init_signup_tables():
@@ -16,7 +64,6 @@ def init_signup_tables():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Main user accounts
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +78,6 @@ def init_signup_tables():
         )
     """)
 
-    # Multiple monitored locations per account
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS account_locations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +89,6 @@ def init_signup_tables():
         )
     """)
 
-    # Multiple phone numbers per account
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS account_phones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +99,6 @@ def init_signup_tables():
         )
     """)
 
-    # Separate phone-call and SMS alert preferences
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS notification_preferences (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,13 +134,10 @@ def signup():
 
     locations = data.get("locations") or []
     phone_numbers = data.get("phoneNumbers") or []
-
     phone_alerts = data.get("phoneAlerts") or []
     text_alerts = data.get("textAlerts") or []
-
     consent = bool(data.get("consent"))
 
-    # Basic validation
     if not first_name or not last_name:
         return jsonify({
             "ok": False,
@@ -135,25 +176,23 @@ def signup():
 
     created_at = datetime.now(timezone.utc).isoformat()
 
+    conn = None
+
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
 
-        # Check for an existing account
         existing = cursor.execute(
             "SELECT id FROM accounts WHERE email = ?",
             (email,)
         ).fetchone()
 
         if existing:
-            conn.close()
-
             return jsonify({
                 "ok": False,
                 "error": "An account with that email already exists."
             }), 409
 
-        # Create account with hashed password
         cursor.execute("""
             INSERT INTO accounts (
                 first_name,
@@ -179,7 +218,6 @@ def signup():
 
         account_id = cursor.lastrowid
 
-        # Save monitored locations
         for location in locations:
             label = str(location.get("label", "")).strip()
             address = str(location.get("address", "")).strip()
@@ -187,8 +225,6 @@ def signup():
 
             if not label or not address:
                 conn.rollback()
-                conn.close()
-
                 return jsonify({
                     "ok": False,
                     "error": "Every monitored location needs a label and address."
@@ -209,15 +245,12 @@ def signup():
                 active
             ))
 
-        # Save phone numbers
         for phone in phone_numbers:
             label = str(phone.get("label", "")).strip()
             number = str(phone.get("number", "")).strip()
 
             if not label or not number:
                 conn.rollback()
-                conn.close()
-
                 return jsonify({
                     "ok": False,
                     "error": "Every phone number needs a label and number."
@@ -236,7 +269,6 @@ def signup():
                 number
             ))
 
-        # Save notification preferences
         cursor.execute("""
             INSERT INTO notification_preferences (
                 account_id,
@@ -251,26 +283,36 @@ def signup():
         ))
 
         conn.commit()
-        conn.close()
 
         token = create_token(account_id)
 
         return jsonify({
-    "ok": True,
-    "message": "TrevorWX Alerts account created successfully.",
-    "accountId": account_id,
-    "token": token
-}), 201
+            "ok": True,
+            "message": "TrevorWX Alerts account created successfully.",
+            "accountId": account_id,
+            "token": token
+        }), 201
 
-        except Exception as e:
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
         return jsonify({
             "ok": False,
             "error": "Unable to create account.",
             "details": str(e)
         }), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
 @api.route("/account", methods=["GET"])
 @token_required
 def get_account(account_id):
+    conn = None
+
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -283,7 +325,6 @@ def get_account(account_id):
         """, (account_id,)).fetchone()
 
         if not account:
-            conn.close()
             return jsonify({
                 "ok": False,
                 "error": "Account not found."
@@ -307,8 +348,6 @@ def get_account(account_id):
             WHERE account_id = ?
         """, (account_id,)).fetchone()
 
-        conn.close()
-
         return jsonify({
             "ok": True,
             "account": {
@@ -316,7 +355,6 @@ def get_account(account_id):
                 "lastName": account["last_name"],
                 "email": account["email"],
                 "createdAt": account["created_at"],
-
                 "locations": [
                     {
                         "id": str(location["id"]),
@@ -326,7 +364,6 @@ def get_account(account_id):
                     }
                     for location in locations
                 ],
-
                 "phoneNumbers": [
                     {
                         "id": str(phone["id"]),
@@ -336,12 +373,10 @@ def get_account(account_id):
                     }
                     for phone in phones
                 ],
-
                 "phoneAlerts": (
                     json.loads(preferences["phone_alerts"])
                     if preferences else []
                 ),
-
                 "textAlerts": (
                     json.loads(preferences["text_alerts"])
                     if preferences else []
@@ -355,3 +390,7 @@ def get_account(account_id):
             "error": "Unable to load account.",
             "details": str(e)
         }), 500
+
+    finally:
+        if conn:
+            conn.close()
