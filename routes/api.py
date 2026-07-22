@@ -252,16 +252,17 @@ def signup():
 
         conn.commit()
         conn.close()
-token = create_token(account_id)
 
-return jsonify({
+        token = create_token(account_id)
+
+        return jsonify({
     "ok": True,
     "message": "TrevorWX Alerts account created successfully.",
     "accountId": account_id,
     "token": token
 }), 201
 
-    except Exception as e:
+        except Exception as e:
         return jsonify({
             "ok": False,
             "error": "Unable to create account.",
