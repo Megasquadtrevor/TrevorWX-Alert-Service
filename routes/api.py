@@ -252,16 +252,105 @@ def signup():
 
         conn.commit()
         conn.close()
+token = create_token(account_id)
 
-        return jsonify({
-            "ok": True,
-            "message": "TrevorWX Alerts account created successfully.",
-            "accountId": account_id
-        }), 201
+return jsonify({
+    "ok": True,
+    "message": "TrevorWX Alerts account created successfully.",
+    "accountId": account_id,
+    "token": token
+}), 201
 
     except Exception as e:
         return jsonify({
             "ok": False,
             "error": "Unable to create account.",
+            "details": str(e)
+        }), 500
+@api.route("/account", methods=["GET"])
+@token_required
+def get_account(account_id):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        account = cursor.execute("""
+            SELECT id, first_name, last_name, email, created_at
+            FROM accounts
+            WHERE id = ? AND active = 1
+        """, (account_id,)).fetchone()
+
+        if not account:
+            conn.close()
+            return jsonify({
+                "ok": False,
+                "error": "Account not found."
+            }), 404
+
+        locations = cursor.execute("""
+            SELECT id, label, address, active
+            FROM account_locations
+            WHERE account_id = ?
+        """, (account_id,)).fetchall()
+
+        phones = cursor.execute("""
+            SELECT id, label, phone
+            FROM account_phones
+            WHERE account_id = ?
+        """, (account_id,)).fetchall()
+
+        preferences = cursor.execute("""
+            SELECT phone_alerts, text_alerts
+            FROM notification_preferences
+            WHERE account_id = ?
+        """, (account_id,)).fetchone()
+
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "account": {
+                "firstName": account["first_name"],
+                "lastName": account["last_name"],
+                "email": account["email"],
+                "createdAt": account["created_at"],
+
+                "locations": [
+                    {
+                        "id": str(location["id"]),
+                        "label": location["label"],
+                        "address": location["address"],
+                        "active": bool(location["active"])
+                    }
+                    for location in locations
+                ],
+
+                "phoneNumbers": [
+                    {
+                        "id": str(phone["id"]),
+                        "label": phone["label"],
+                        "number": phone["phone"],
+                        "active": True
+                    }
+                    for phone in phones
+                ],
+
+                "phoneAlerts": (
+                    json.loads(preferences["phone_alerts"])
+                    if preferences else []
+                ),
+
+                "textAlerts": (
+                    json.loads(preferences["text_alerts"])
+                    if preferences else []
+                )
+            }
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": "Unable to load account.",
             "details": str(e)
         }), 500
