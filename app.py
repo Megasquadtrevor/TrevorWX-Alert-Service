@@ -8,6 +8,7 @@ from routes.alerts import alerts
 from routes.api import api
 
 app = Flask(__name__)
+CORS(app)
 init_db()
 
 app.register_blueprint(radar)
