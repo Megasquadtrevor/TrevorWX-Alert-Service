@@ -1,4 +1,5 @@
 from flask import Flask, render_template
+from flask_cors import CORS
 from database import init_db
 
 from routes.radar import radar
