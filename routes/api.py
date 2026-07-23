@@ -454,3 +454,225 @@ def login():
     finally:
         if conn:
             conn.close()
+
+@api.route("/locations", methods=["POST"])
+@token_required
+def add_location(account_id):
+    data = request.get_json(silent=True) or {}
+
+    label = str(data.get("label", "")).strip()
+    address = str(data.get("address", "")).strip()
+
+    if not label or not address:
+        return jsonify({
+            "ok": False,
+            "error": "Location label and address are required."
+        }), 400
+
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO account_locations (
+                account_id,
+                label,
+                address,
+                active
+            )
+            VALUES (?, ?, ?, 1)
+        """, (
+            account_id,
+            label,
+            address
+        ))
+
+        location_id = cursor.lastrowid
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "location": {
+                "id": str(location_id),
+                "label": label,
+                "address": address,
+                "active": True
+            }
+        }), 201
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return jsonify({
+            "ok": False,
+            "error": "Unable to add location.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@api.route("/locations/<int:location_id>", methods=["PATCH"])
+@token_required
+def update_location(account_id, location_id):
+    data = request.get_json(silent=True) or {}
+
+    allowed_fields = {}
+
+    if "label" in data:
+        label = str(data.get("label", "")).strip()
+        if not label:
+            return jsonify({
+                "ok": False,
+                "error": "Location label cannot be empty."
+            }), 400
+        allowed_fields["label"] = label
+
+    if "address" in data:
+        address = str(data.get("address", "")).strip()
+        if not address:
+            return jsonify({
+                "ok": False,
+                "error": "Location address cannot be empty."
+            }), 400
+        allowed_fields["address"] = address
+
+    if "active" in data:
+        allowed_fields["active"] = 1 if bool(data["active"]) else 0
+
+    if not allowed_fields:
+        return jsonify({
+            "ok": False,
+            "error": "No valid fields were provided."
+        }), 400
+
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        existing = cursor.execute("""
+            SELECT id
+            FROM account_locations
+            WHERE id = ? AND account_id = ?
+        """, (
+            location_id,
+            account_id
+        )).fetchone()
+
+        if not existing:
+            return jsonify({
+                "ok": False,
+                "error": "Location not found."
+            }), 404
+
+        set_clause = ", ".join(
+            f"{field} = ?" for field in allowed_fields
+        )
+
+        values = list(allowed_fields.values())
+        values.extend([location_id, account_id])
+
+        cursor.execute(
+            f"""
+            UPDATE account_locations
+            SET {set_clause}
+            WHERE id = ? AND account_id = ?
+            """,
+            values
+        )
+
+        conn.commit()
+
+        location = cursor.execute("""
+            SELECT id, label, address, active
+            FROM account_locations
+            WHERE id = ? AND account_id = ?
+        """, (
+            location_id,
+            account_id
+        )).fetchone()
+
+        return jsonify({
+            "ok": True,
+            "location": {
+                "id": str(location["id"]),
+                "label": location["label"],
+                "address": location["address"],
+                "active": bool(location["active"])
+            }
+        }), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return jsonify({
+            "ok": False,
+            "error": "Unable to update location.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+
+@api.route("/locations/<int:location_id>", methods=["DELETE"])
+@token_required
+def delete_location(account_id, location_id):
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        existing = cursor.execute("""
+            SELECT id
+            FROM account_locations
+            WHERE id = ? AND account_id = ?
+        """, (
+            location_id,
+            account_id
+        )).fetchone()
+
+        if not existing:
+            return jsonify({
+                "ok": False,
+                "error": "Location not found."
+            }), 404
+
+        cursor.execute("""
+            DELETE FROM account_locations
+            WHERE id = ? AND account_id = ?
+        """, (
+            location_id,
+            account_id
+        ))
+
+        conn.commit()
+
+        return jsonify({
+            "ok": True
+        }), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return jsonify({
+            "ok": False,
+            "error": "Unable to delete location.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
