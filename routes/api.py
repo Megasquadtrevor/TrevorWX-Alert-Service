@@ -394,3 +394,63 @@ def get_account(account_id):
     finally:
         if conn:
             conn.close()
+
+@api.route("/login", methods=["POST"])
+def login():
+    data = request.get_json(silent=True) or {}
+
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+
+    if not email or not password:
+        return jsonify({
+            "ok": False,
+            "error": "Email and password are required."
+        }), 400
+
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        account = cursor.execute("""
+            SELECT id, first_name, last_name, email, password_hash
+            FROM accounts
+            WHERE email = ? AND active = 1
+        """, (email,)).fetchone()
+
+        if not account or not check_password_hash(
+            account["password_hash"],
+            password
+        ):
+            return jsonify({
+                "ok": False,
+                "error": "Invalid email or password."
+            }), 401
+
+        token = create_token(account["id"])
+
+        return jsonify({
+            "ok": True,
+            "message": "Login successful.",
+            "token": token,
+            "account": {
+                "id": account["id"],
+                "firstName": account["first_name"],
+                "lastName": account["last_name"],
+                "email": account["email"]
+            }
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": "Unable to log in.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
