@@ -679,3 +679,182 @@ def delete_location(account_id, location_id):
     finally:
         if conn:
             conn.close()
+@api.route("/password-reset/request", methods=["POST"])
+def request_password_reset():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip().lower()
+
+    if not email:
+        return jsonify({
+            "ok": False,
+            "error": "Email address is required."
+        }), 400
+
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        account = cursor.execute("""
+            SELECT id, email
+            FROM accounts
+            WHERE email = ? AND active = 1
+        """, (email,)).fetchone()
+
+        # Always return the same response whether the account exists or not.
+        # This prevents people from using this endpoint to discover
+        # which email addresses have TrevorWX Alerts accounts.
+        if not account:
+            return jsonify({
+                "ok": True,
+                "message": "If an account exists for that email, a password reset link will be sent."
+            }), 200
+
+        reset_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(
+            reset_token.encode("utf-8")
+        ).hexdigest()
+
+        created_at = datetime.now(timezone.utc)
+        expires_at = created_at + timedelta(minutes=30)
+
+        # Invalidate any previous unused reset tokens for this account.
+        cursor.execute("""
+            UPDATE password_reset_tokens
+            SET used = 1
+            WHERE account_id = ? AND used = 0
+        """, (account["id"],))
+
+        cursor.execute("""
+            INSERT INTO password_reset_tokens (
+                account_id,
+                token_hash,
+                expires_at,
+                used,
+                created_at
+            )
+            VALUES (?, ?, ?, 0, ?)
+        """, (
+            account["id"],
+            token_hash,
+            expires_at.isoformat(),
+            created_at.isoformat()
+        ))
+
+        conn.commit()
+
+        # TEMPORARY FOR DEVELOPMENT ONLY:
+        # This lets us test the reset flow before connecting an email service.
+        return jsonify({
+            "ok": True,
+            "message": "If an account exists for that email, a password reset link will be sent.",
+            "resetToken": reset_token
+        }), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return jsonify({
+            "ok": False,
+            "error": "Unable to process password reset request.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
+
+@api.route("/password-reset/confirm", methods=["POST"])
+def confirm_password_reset():
+    data = request.get_json(silent=True) or {}
+
+    token = str(data.get("token", "")).strip()
+    new_password = str(data.get("newPassword", ""))
+
+    if not token:
+        return jsonify({
+            "ok": False,
+            "error": "Reset token is required."
+        }), 400
+
+    if len(new_password) < 8:
+        return jsonify({
+            "ok": False,
+            "error": "Password must be at least 8 characters."
+        }), 400
+
+    token_hash = hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+    conn = None
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        reset = cursor.execute("""
+            SELECT id, account_id, expires_at, used
+            FROM password_reset_tokens
+            WHERE token_hash = ?
+        """, (token_hash,)).fetchone()
+
+        if not reset or reset["used"]:
+            return jsonify({
+                "ok": False,
+                "error": "Invalid or already used password reset token."
+            }), 400
+
+        expires_at = datetime.fromisoformat(
+            reset["expires_at"]
+        )
+
+        if datetime.now(timezone.utc) > expires_at:
+            return jsonify({
+                "ok": False,
+                "error": "Password reset token has expired."
+            }), 400
+
+        new_password_hash = generate_password_hash(
+            new_password
+        )
+
+        cursor.execute("""
+            UPDATE accounts
+            SET password_hash = ?
+            WHERE id = ?
+        """, (
+            new_password_hash,
+            reset["account_id"]
+        ))
+
+        cursor.execute("""
+            UPDATE password_reset_tokens
+            SET used = 1
+            WHERE id = ?
+        """, (reset["id"],))
+
+        conn.commit()
+
+        return jsonify({
+            "ok": True,
+            "message": "Password updated successfully."
+        }), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+
+        return jsonify({
+            "ok": False,
+            "error": "Unable to reset password.",
+            "details": str(e)
+        }), 500
+
+    finally:
+        if conn:
+            conn.close()
