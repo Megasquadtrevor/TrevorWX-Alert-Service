@@ -29,7 +29,7 @@ def init_db():
             voice INTEGER DEFAULT 0
         )
     """)
-cursor.execute("""
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER NOT NULL,
@@ -39,7 +39,7 @@ cursor.execute("""
         created_at TEXT NOT NULL,
         FOREIGN KEY (account_id) REFERENCES accounts(id)
     )
-""")
+    """)
     conn.commit()
     conn.close()
 
